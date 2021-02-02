@@ -1,0 +1,358 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy a service on AWS Fargate, hosted in a private subnet, but accessible via a private NLB for outbound proxying
+Parameters:
+  ExternalNetworkVPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID
+  LogGroupRetentionInDays:
+    Type: String
+    Description: The number of days to retain logs
+    Default: 90
+  ContainerImage:
+    Type: String
+    Description: The container to use. This can be a dockerhub name (e.g. datadog/squid) or a full ECR path.
+    Default: charliejllewellyn/squid:latest
+  ProjectName:
+    Type: String
+    Description: Project Name to be used for naming and tagging
+    Default: Example proxy deployment
+  ProxySubnetA:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Proxy Subnet A
+  ProxySubnetB:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Proxy Subnet B
+  EgressSubnetA:
+    Type: AWS::EC2::Subnet::Id
+    Description: Egress Subnet B
+  EgressSubnetB:
+    Type: AWS::EC2::Subnet::Id
+    Description: Egress Subnet B
+  InternetGateway:
+    Type: String
+    Description: Internet Gatewway ID
+
+Resources:
+  EgressRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ExternalNetworkVPCId
+
+  EgressSubnetAassociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref EgressRouteTable
+      SubnetId: !Ref EgressSubnetA
+
+  EgressSubnetAassociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref EgressRouteTable
+      SubnetId: !Ref EgressSubnetB
+
+  EgressRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref EgressRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  NAT1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIP1.AllocationId
+      SubnetId: !Ref EgressSubnetA
+
+  EIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  ProxyRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ExternalNetworkVPCId
+
+  SubnetAassociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref ProxyRouteTable1
+      SubnetId: !Ref ProxySubnetA
+
+  ProxyRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref ProxyRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NAT1
+
+  NAT2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIP2.AllocationId
+      SubnetId: !Ref EgressSubnetB
+
+  EIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  ProxyRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ExternalNetworkVPCId
+
+  SubnetAassociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref ProxyRouteTable2
+      SubnetId: !Ref ProxySubnetB
+
+  ProxyRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref ProxyRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NAT2
+
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref LogGroupRetentionInDays
+
+  OutboundProxiesSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Interface Endpoints"
+      VpcId: !Ref ExternalNetworkVPCId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3128
+        ToPort: 3128
+        CidrIp: 10.0.0.0/8
+      - IpProtocol: tcp
+        FromPort: 3128
+        ToPort: 3128
+        CidrIp: 172.16.0.0/12
+      - IpProtocol: tcp
+        FromPort: 3128
+        ToPort: 3128
+        CidrIp: 192.168.0.0/16
+
+  ECSRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: ''
+          Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: KmsReadOnly
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - ecr:GetAuthorizationToken
+            - ecr:BatchCheckLayerAvailability
+            - ecr:GetDownloadUrlForLayer
+            - ecr:BatchGetImage
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+      Path: /
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+
+  OutBoundProxyDefinition: 
+    Type: AWS::ECS::TaskDefinition
+    Properties: 
+      RequiresCompatibilities:
+        - "FARGATE"
+      Cpu: "1024"
+      Memory: "2048"
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt ECSRole.Arn
+      ContainerDefinitions: 
+        - 
+          Name: "outbound-proxy"
+          Image: !Ref ContainerImage
+          PortMappings: 
+            - 
+              ContainerPort: 3128
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-group: proxy
+              awslogs-stream-prefix: squid
+              awslogs-create-group: true
+
+  OutboundProxyNLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internal
+      Subnets:
+        - !Ref ProxySubnetA
+        - !Ref ProxySubnetB
+      Type: network
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckProtocol: TCP
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Port: 3128
+      Protocol: TCP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref ExternalNetworkVPCId
+      TargetGroupAttributes:
+        - Key: proxy_protocol_v2.enabled
+          Value: true
+
+
+  OutboundProxyListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref OutboundProxyNLB
+      Port: 3128
+      Protocol: TCP
+
+  ServiceAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: service-autoscaling
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - application-autoscaling:*
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                Resource: '*'
+
+  DefaultServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: 3
+      MaxCapacity: 10
+      ResourceId: !Sub
+        - service/${EcsClusterName}/${EcsDefaultServiceName}
+        - EcsClusterName: !Ref ECSCluster
+          EcsDefaultServiceName: !GetAtt OutboundProxyService.Name
+      RoleARN: !GetAtt ServiceAutoScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  DefaultServiceScaleOutPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ScaleOutPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref DefaultServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - ScalingAdjustment: 1
+            MetricIntervalLowerBound: 0
+
+  DefaultServiceScaleInPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ScaleInPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref DefaultServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - ScalingAdjustment: -1
+            MetricIntervalUpperBound: 0
+
+  DefaultServiceScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: 2
+      Statistic: Average
+      TreatMissingData: notBreaching
+      Threshold: 50
+      AlarmDescription: Alarm to add capacity if CPU is high
+      Period: 60
+      AlarmActions:
+        - !Ref DefaultServiceScaleOutPolicy
+      Namespace: AWS/ECS
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+        - Name: ServiceName
+          Value: !GetAtt OutboundProxyService.Name
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  DefaultServiceScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: 2
+      Statistic: Average
+      TreatMissingData: notBreaching
+      Threshold: 25
+      AlarmDescription: Alarm to reduce capacity if container CPU is low
+      Period: 300
+      AlarmActions:
+        - !Ref DefaultServiceScaleInPolicy
+      Namespace: AWS/ECS
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+        - Name: ServiceName
+          Value: !GetAtt OutboundProxyService.Name
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
+
+  OutboundProxyService:
+    DependsOn:
+      - OutboundProxyListener
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DesiredCount: 3
+      LaunchType: FARGATE
+      TaskDefinition: !Ref OutBoundProxyDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref ProxySubnetA
+            - !Ref ProxySubnetB
+          SecurityGroups:
+            - !Ref OutboundProxiesSecurityGroup
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+      - ContainerName: outbound-proxy
+        ContainerPort: 3128
+        TargetGroupArn: !Ref TargetGroup
