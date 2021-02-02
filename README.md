@@ -16,7 +16,7 @@ It is designed to be deployed into an existing VPC with the following resources 
 
 The diagram below shows the high level architecture for the deployment.
 
-!(images/squid-proxy.png)
+![squid architecture](images/squid-proxy.png)
 
 **Note:** This has not been tested for production use. Use this at your own risk.
 
