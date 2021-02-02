@@ -49,4 +49,8 @@ docker push <docker hub username>/squid
 
 ## Customising the domain allow list
 
-To customise the domain allow list add your domains to domain_allow_list.txt and follow the steps to build (updating the version number in the tag) and push the container. Once the container has been pushed to Docker Hub update the CloudFormation stack parameter *ContainerImage* with the new container tag with updated version number to update the container.
+To customise the domain allow list:
+- Add your domains to **domain_allow_list.txt** 
+- Follow the steps to build above (updating the version number in the tag)
+- Push the container
+- Once the container has been pushed to Docker Hub update the CloudFormation stack parameter *ContainerImage* with the new container tag with updated version number to update the container.
