@@ -14,6 +14,8 @@ It is designed to be deployed into an existing VPC with the following resources 
 - 2 public subnets (used for NAT gateways for outbound access)
 - 2 private subnets (used to host the squid conatiners in Amazon Fargate)
 
+**Note:** The solution will create new route tables for all subnets overriding any existing routing you may have in place.
+
 The diagram below shows the high level architecture for the deployment.
 
 ![squid architecture](images/squid-proxy.png)
@@ -41,7 +43,10 @@ To deploy the solution perfom the following steps.
 docker push <docker hub username>/squid
 ```
 - Deploy the [Cloudformation script](cloudformation/example-proxy-product.yaml)
+- Update the parameters to match your configuration details e.g.
+
+![cf params](images/cf-squid.png)
 
 ## Customising the domain allow list
 
-To customise the domain allow list add your domains to domain_allow_list.txt and follow the steps to build and push the container. Once the container has been pushed to Docker Hub re-run the CloudFormation script to redeploy the solution.
+To customise the domain allow list add your domains to domain_allow_list.txt and follow the steps to build (updating the version number in the tag) and push the container. Once the container has been pushed to Docker Hub update the CloudFormation stack parameter *ContainerImage* with the new container tag with updated version number to update the container.
