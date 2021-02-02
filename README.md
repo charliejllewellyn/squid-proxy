@@ -29,7 +29,7 @@ To build the container:
 - Clone the repo
 - Run the following command
 ```
-docker build . --tag <docker hub username>/squid 
+docker build . --tag <docker hub username>/squid:<verion number>
 ```
 
 ## Deployment
@@ -40,7 +40,7 @@ To deploy the solution perfom the following steps.
 
 - Push the image to docker hub.
 ```
-docker push <docker hub username>/squid
+docker push <docker hub username>/squid:<verion number>
 ```
 - Deploy the [Cloudformation script](cloudformation/example-proxy-product.yaml)
 - Update the parameters to match your configuration details e.g.
